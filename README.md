@@ -102,7 +102,7 @@ Requests per minute: 24 × MAX_DISCORD_REQUESTS = 24 req/min
 Discord limit: ~30 req/min (sustained)
 Margin: 30 / 24 = 1.25× (25% safety margin)
 ```
-
+### Log Stats
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `STATS_LOG_INTERVAL` | `300` | Interval for stats logs (seconds) |
