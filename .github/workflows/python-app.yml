@@ -21,7 +21,7 @@ jobs:
     - name: 🐍 Set up Python 3.14
       uses: actions/setup-python@v5
       with:
-        python-version: "3.10"
+        python-version: "3.14"
 
     - name: 📦 Install dependencies
       run: |
@@ -31,10 +31,8 @@ jobs:
 
     - name: 🕵️‍♂️ Analyze code with Pylint
       run: |
-        # Analyze the main script. 
-        # The --exit-zero flag prevents the workflow from failing if the score is not 10/10.
-        pylint tot_discord_bridge.py --exit-zero
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+        # Use python -m to ensure the system finds the module correctly
+        python -m pylint tot_discord_bridge.py --exit-zero
     - name: Test with pytest
       run: |
         pytest
