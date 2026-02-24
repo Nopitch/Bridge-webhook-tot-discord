@@ -49,7 +49,8 @@ BOT_AVATAR = ""
 # =============================================================================
 # BATCHING - Optimized for 60 players
 # Capacity calculation:
-#   - Discord limit: 5 requests / 2 seconds = 150 req/min
+#   - Discord limit: 5 requests / 2 seconds = 150 req/min (burst)
+#   - Discord limit: 30 requests / minute (sustained)
 #   - Our config: 1 request / 2.5 seconds = 24 req/min (very safe)
 #   - With 10 msg/batch: 240 messages/minute
 #   - 60 players × 2 msg/min = 120 msg/min
@@ -57,7 +58,31 @@ BOT_AVATAR = ""
 # =============================================================================
 
 BATCH_DELAY = 2.5       # Seconds between each send (avoids rate limits)
-MAX_BATCH_SIZE = 10     # Maximum 10 messages per send
+MAX_BATCH_SIZE = 20     # Maximum 20 messages per send
+
+# =============================================================================
+# RATE LIMIT PROTECTION - Prevents hitting Discord limits
+# Discord has TWO limits:
+#   - Burst: 5 requests / 2 seconds (instant spam protection)
+#   - Sustained: ~30 requests / minute (long-term protection)
+#
+# INTER_REQUEST_DELAY: Time to wait between each Discord request within a batch
+#   - 0.5s = max 4 requests/2s (safe under burst limit of 5/2s)
+#   - Prevents "machine gun" requests when processing long messages
+#
+# MAX_DISCORD_REQUESTS: Maximum requests per batch cycle
+#   - Limits how many Discord API calls we make per BATCH_DELAY cycle
+#   - Remaining messages are queued for next cycle (not lost!)
+#   - Set to 0 for unlimited (old behavior, reactive to rate limits)
+# =============================================================================
+
+INTER_REQUEST_DELAY = 0.5   # Seconds between requests (0.5 = safe for burst limit)
+MAX_DISCORD_REQUESTS = 1    # Max requests per cycle (0 = unlimited, reactive mode)
+
+# =============================================================================
+# QUEUE CONFIGURATION
+# =============================================================================
+
 MAX_QUEUE_SIZE = 500    # Buffer for activity spikes (increased for 60 players)
 MAX_FAILED_RETRY = 200  # Messages waiting for retry
 
@@ -170,6 +195,7 @@ class BridgeStats:
     - Historical peaks (queue, messages/min)
     - 5-minute sliding history for throughput calculations
     - Processing latencies
+    - Rate limit breakdown by type (global, shared, user)
     """
 
     # Global counters since startup
@@ -178,6 +204,12 @@ class BridgeStats:
     total_dropped: int = 0          # Messages lost (queue full)
     total_failed: int = 0           # Messages abandoned (Discord errors)
     total_rate_limits: int = 0      # Number of rate limits encountered
+    total_requests: int = 0         # Total Discord API requests made
+
+    # Rate limit breakdown by scope (for diagnostics)
+    rate_limits_global: int = 0     # Global rate limits (very bad, reduce traffic!)
+    rate_limits_shared: int = 0     # Shared rate limits (channel/webhook shared with others)
+    rate_limits_user: int = 0       # User/endpoint rate limits (our fault, too fast)
 
     # Historical peaks for sizing
     peak_queue_size: int = 0        # Maximum queue size observed
@@ -245,10 +277,28 @@ class BridgeStats:
         with self._lock:
             self.total_failed += count
 
-    def record_rate_limit(self):
-        """Records a Discord rate limit."""
+    def record_request(self):
+        """Records a Discord API request."""
+        with self._lock:
+            self.total_requests += 1
+
+    def record_rate_limit(self, scope: str = "unknown"):
+        """
+        Records a Discord rate limit with its scope.
+
+        Scope types:
+        - "global": Global rate limit (50 req/s) - VERY BAD, reduce traffic!
+        - "shared": Shared resource (channel/webhook) - might not be our fault
+        - "user": Per-endpoint limit - we're sending too fast
+        """
         with self._lock:
             self.total_rate_limits += 1
+            if scope == "global":
+                self.rate_limits_global += 1
+            elif scope == "shared":
+                self.rate_limits_shared += 1
+            else:
+                self.rate_limits_user += 1
 
     def record_latency(self, latency_seconds: float):
         """
@@ -332,6 +382,13 @@ class BridgeStats:
                 return "RATE LIMITED", "#faa61a"
         return "OK", "#43b581"
 
+    def get_requests_per_minute(self) -> float:
+        """Returns average Discord API requests per minute since startup."""
+        uptime_seconds = (datetime.now() - self.start_time).total_seconds()
+        if uptime_seconds > 0:
+            return (self.total_requests / uptime_seconds) * 60
+        return 0.0
+
     def to_dict(self, current_queue: int) -> dict:
         """
         Exports stats as dictionary (for JSON /stats endpoint).
@@ -361,12 +418,19 @@ class BridgeStats:
                 "peak_per_minute": round(self.peak_messages_per_minute, 1),
             },
             "performance": {
+                "total_requests": self.total_requests,
+                "requests_per_minute": round(self.get_requests_per_minute(), 1),
                 "rate_limits": self.total_rate_limits,
+                "rate_limits_global": self.rate_limits_global,
+                "rate_limits_shared": self.rate_limits_shared,
+                "rate_limits_user": self.rate_limits_user,
                 "average_latency_ms": round(self.get_average_latency() * 1000, 1),
             },
             "config": {
                 "batch_delay": BATCH_DELAY,
                 "max_batch_size": MAX_BATCH_SIZE,
+                "inter_request_delay": INTER_REQUEST_DELAY,
+                "max_discord_requests": MAX_DISCORD_REQUESTS,
                 "theoretical_capacity": int((60 / BATCH_DELAY) * MAX_BATCH_SIZE),
             }
         }
@@ -438,15 +502,21 @@ def send_to_discord(content):
     """
     Sends text content to Discord.
 
-    Returns (success, retry_after):
+    Returns (success, retry_after, scope):
     - success: True if sent successfully
     - retry_after: seconds to wait if rate limited (0 otherwise)
+    - scope: rate limit scope if rate limited ("global", "shared", "user", or None)
+
+    Rate limit scopes (from Discord API):
+    - "global": Global rate limit (50 req/s) - CRITICAL, reduce all traffic!
+    - "shared": Shared resource limit - channel/webhook shared with other bots
+    - "user": Per-endpoint limit - we're sending too fast on this endpoint
 
     IMPORTANT: This function does NOT call time.sleep()!
     The worker handles waiting to remain non-blocking.
     """
     if not content:
-        return True, 0
+        return True, 0, None
 
     # Truncate if necessary (shouldn't happen with our splitting)
     if len(content) > DISCORD_MAX_CHARS:
@@ -463,16 +533,33 @@ def send_to_discord(content):
         payload["avatar_url"] = BOT_AVATAR
 
     try:
+        # Record that we're making a request
+        stats.record_request()
+
         response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
 
         if response.status_code == 204:
             # Success
-            return True, 0
+            return True, 0, None
 
         elif response.status_code == 429:
-            # Rate limit - return delay, worker will handle waiting
+            # Rate limit - extract detailed information
             retry_after = response.json().get('retry_after', 2)
-            return False, retry_after
+
+            # Get rate limit scope from headers (tells us WHY we're rate limited)
+            scope = response.headers.get('X-RateLimit-Scope', 'user')
+            remaining = response.headers.get('X-RateLimit-Remaining', '?')
+            reset_after = response.headers.get('X-RateLimit-Reset-After', '?')
+
+            # Log with appropriate severity based on scope
+            if scope == "global":
+                logger.error(f"⚠️ GLOBAL RATE LIMIT! Wait {retry_after}s - REDUCE TRAFFIC IMMEDIATELY!")
+            elif scope == "shared":
+                logger.warning(f"Rate limit (shared resource) - {retry_after}s - May be other bots on this channel")
+            else:
+                logger.warning(f"Rate limit (endpoint) - {retry_after}s (remaining: {remaining}, reset: {reset_after}s)")
+
+            return False, retry_after, scope
 
         elif response.status_code in (404, 401):
             # Invalid or deleted webhook
@@ -480,20 +567,20 @@ def send_to_discord(content):
             logger.error("CRITICAL ERROR: Discord webhook invalid or deleted!")
             logger.error("Check the webhook URL in the configuration.")
             logger.error("=" * 60)
-            return False, 0
+            return False, 0, None
 
         else:
             logger.error(f"Discord error {response.status_code}: {response.text}")
             # 5xx error = can retry, others = no
-            return False, 2 if response.status_code >= 500 else 0
+            return False, 2 if response.status_code >= 500 else 0, None
 
     except requests.exceptions.Timeout:
         logger.error("Timeout sending to Discord (10s)")
-        return False, 2
+        return False, 2, None
 
     except Exception as e:
         logger.error(f"Send error: {e}")
-        return False, 2
+        return False, 2, None
 
 
 # =============================================================================
@@ -507,8 +594,14 @@ def send_batch_to_discord(messages):
     - Respect the 2000 character limit
     - Preserve chronological order (IMPORTANT for RP!)
     - Handle long messages (up to 1000 chars)
+    - Respect Discord rate limits with INTER_REQUEST_DELAY
+    - Optionally limit requests per cycle with MAX_DISCORD_REQUESTS
 
     Returns (success, retry_after, unsent_messages)
+
+    Rate limit protection:
+    - INTER_REQUEST_DELAY: Waits between each request to avoid burst limit (5 req/2s)
+    - MAX_DISCORD_REQUESTS: Limits requests per cycle, excess messages go to next cycle
     """
     if not messages:
         return True, 0, []
@@ -529,20 +622,40 @@ def send_batch_to_discord(messages):
     current_batch_data = []
     current_batch_lines = []
     current_length = 0
+    requests_sent = 0  # Track requests in this cycle
 
     for idx, (data, formatted) in enumerate(formatted_messages):
         line_length = len(formatted) + 1  # +1 for \n
 
         # If adding this message exceeds limit, send current batch first
         if current_length + line_length > SAFE_BATCH_CHARS and current_batch_lines:
+
+            # Check if we've hit the request limit for this cycle
+            if MAX_DISCORD_REQUESTS > 0 and requests_sent >= MAX_DISCORD_REQUESTS:
+                # Limit reached: queue remaining messages for next cycle
+                unsent_messages.extend(current_batch_data)
+                for d, _ in formatted_messages[idx:]:
+                    if d not in unsent_messages:
+                        unsent_messages.append(d)
+                logger.info(f"Request limit ({MAX_DISCORD_REQUESTS}/cycle) reached, {len(unsent_messages)} msg deferred to next cycle")
+                return True, 0, unsent_messages  # True = not an error, just deferred
+
+            # Wait between requests to respect burst limit (5 req / 2s)
+            if requests_sent > 0 and INTER_REQUEST_DELAY > 0:
+                time.sleep(INTER_REQUEST_DELAY)
+
             # Send current batch
             content = "\n".join(current_batch_lines)
-            success, retry_after = send_to_discord(content)
+            success, retry_after, scope = send_to_discord(content)
+            requests_sent += 1
 
             if success:
-                logger.info(f"Sent {len(current_batch_lines)} message(s) | Queue: {message_queue.qsize()}")
+                stats.record_sent(len(current_batch_data))
+                logger.info(f"Sent {len(current_batch_lines)} message(s) [req {requests_sent}] | Queue: {message_queue.qsize()}")
             else:
                 # Failure: keep all remaining messages for retry
+                if retry_after > 0:
+                    stats.record_rate_limit(scope or "user")
                 unsent_messages.extend(current_batch_data)
                 # Also add unprocessed messages (use idx instead of .index())
                 for d, _ in formatted_messages[idx:]:
@@ -562,12 +675,26 @@ def send_batch_to_discord(messages):
 
     # Send the last batch
     if current_batch_lines:
+        # Check request limit
+        if MAX_DISCORD_REQUESTS > 0 and requests_sent >= MAX_DISCORD_REQUESTS:
+            unsent_messages.extend(current_batch_data)
+            logger.info(f"Request limit ({MAX_DISCORD_REQUESTS}/cycle) reached, {len(unsent_messages)} msg deferred")
+            return True, 0, unsent_messages
+
+        # Wait between requests
+        if requests_sent > 0 and INTER_REQUEST_DELAY > 0:
+            time.sleep(INTER_REQUEST_DELAY)
+
         content = "\n".join(current_batch_lines)
-        success, retry_after = send_to_discord(content)
+        success, retry_after, scope = send_to_discord(content)
+        requests_sent += 1
 
         if success:
-            logger.info(f"Sent {len(current_batch_lines)} message(s) | Queue: {message_queue.qsize()}")
+            stats.record_sent(len(current_batch_data))
+            logger.info(f"Sent {len(current_batch_lines)} message(s) [req {requests_sent}] | Queue: {message_queue.qsize()}")
         else:
+            if retry_after > 0:
+                stats.record_rate_limit(scope or "user")
             unsent_messages.extend(current_batch_data)
             return False, retry_after, unsent_messages
 
@@ -628,18 +755,20 @@ def discord_worker():
                 success, retry_after, unsent = send_batch_to_discord(batch)
 
                 if success:
-                    # Record sent messages
-                    stats.record_sent(len(batch))
-
+                    # Record sent messages (already done in send_batch_to_discord)
                     # Calculate and record average batch latency
-                    for msg in batch:
+                    sent_count = len(batch) - len(unsent)
+                    for msg in batch[:sent_count]:
                         if 'received_at' in msg:
                             latency = (datetime.now() - msg['received_at']).total_seconds()
                             stats.record_latency(latency)
+
+                    # Handle deferred messages (from request limit, not errors)
+                    if unsent:
+                        failed_messages.extend(unsent)
                 else:
                     if retry_after > 0:
                         # Rate limit: note until when to wait
-                        stats.record_rate_limit()
                         rate_limit_until = time.time() + retry_after
                         failed_messages.extend(unsent)
                         logger.warning(f"Discord rate limit, resuming in {retry_after:.1f}s | Queue: {message_queue.qsize()}")
@@ -659,11 +788,14 @@ def discord_worker():
             # Periodic statistics log
             if time.time() - last_stats_log > STATS_LOG_INTERVAL:
                 recv_min, sent_min = stats.get_messages_per_minute()
+                req_min = stats.get_requests_per_minute()
                 logger.info(
                     f"[STATS] Received: {recv_min:.1f}/min | Sent: {sent_min:.1f}/min | "
+                    f"Requests: {req_min:.1f}/min | "
                     f"Queue: {message_queue.qsize()}/{MAX_QUEUE_SIZE} | "
                     f"Peak queue: {stats.peak_queue_size} | "
-                    f"Lost: {stats.total_dropped} | Rate limits: {stats.total_rate_limits}"
+                    f"Lost: {stats.total_dropped} | "
+                    f"Rate limits: {stats.total_rate_limits} (G:{stats.rate_limits_global}/S:{stats.rate_limits_shared}/U:{stats.rate_limits_user})"
                 )
                 last_stats_log = time.time()
 
@@ -744,6 +876,7 @@ def health_check():
     """
     queue_size = message_queue.qsize()
     recv_min, sent_min = stats.get_messages_per_minute()
+    req_min = stats.get_requests_per_minute()
     avg_latency = stats.get_average_latency()
     status, status_color = stats.get_health_status(queue_size, MAX_QUEUE_SIZE)
     channels_info = ", ".join(ALLOWED_CHANNELS) if ALLOWED_CHANNELS else "All"
@@ -757,6 +890,9 @@ def health_check():
     filled = int(bar_length * queue_percent / 100)
     queue_bar = "█" * filled + "░" * (bar_length - filled)
 
+    # Rate limit breakdown display
+    rate_limit_breakdown = f"Global: {stats.rate_limits_global} | Shared: {stats.rate_limits_shared} | User: {stats.rate_limits_user}"
+
     # Alert if problem detected
     alert_html = ""
     if status == "CRITICAL":
@@ -764,6 +900,13 @@ def health_check():
         <div style="background: #f04747; padding: 15px; border-radius: 8px; margin: 10px 0;">
             <strong>⚠️ ALERT:</strong> Queue almost full! Risk of message loss.
             <br>→ Increase MAX_QUEUE_SIZE or reduce BATCH_DELAY
+        </div>
+        """
+    elif stats.rate_limits_global > 0:
+        alert_html = f"""
+        <div style="background: #f04747; padding: 15px; border-radius: 8px; margin: 10px 0;">
+            <strong>🚨 CRITICAL:</strong> {stats.rate_limits_global} GLOBAL rate limit(s) hit!
+            <br>→ Reduce traffic immediately or risk being banned
         </div>
         """
     elif stats.total_dropped > 0:
@@ -815,6 +958,10 @@ def health_check():
                 <div class="stat-label">Messages sent/min</div>
             </div>
             <div class="card stat">
+                <div class="stat-value" style="color: #faa61a;">{req_min:.1f}</div>
+                <div class="stat-label">Discord requests/min</div>
+            </div>
+            <div class="card stat">
                 <div class="stat-value" style="color: {queue_color};">{queue_size}</div>
                 <div class="stat-label">Current queue</div>
             </div>
@@ -837,15 +984,25 @@ def health_check():
             <div class="grid">
                 <p><strong>Received:</strong> {stats.total_received}</p>
                 <p><strong>Sent:</strong> {stats.total_sent}</p>
+                <p><strong>Requests:</strong> {stats.total_requests}</p>
                 <p><strong style="color: #f04747;">Lost:</strong> {stats.total_dropped}</p>
-                <p><strong style="color: #faa61a;">Rate limits:</strong> {stats.total_rate_limits}</p>
             </div>
+        </div>
+
+        <div class="card">
+            <h3>⏱️ Rate Limits</h3>
+            <p><strong>Total:</strong> {stats.total_rate_limits}</p>
+            <p><strong>Breakdown:</strong> {rate_limit_breakdown}</p>
+            <p style="color: #72767d; font-size: 0.85em;">
+                Global = critical (reduce traffic!) | Shared = channel congestion | User = too fast
+            </p>
         </div>
 
         <div class="card">
             <h3>⚙️ Configuration</h3>
             <p><strong>Channels:</strong> {channels_info}</p>
             <p><strong>Batch:</strong> {BATCH_DELAY}s / {MAX_BATCH_SIZE} msg</p>
+            <p><strong>Rate limit protection:</strong> {INTER_REQUEST_DELAY}s between requests{f", max {MAX_DISCORD_REQUESTS} req/cycle" if MAX_DISCORD_REQUESTS > 0 else ""}</p>
             <p><strong>Theoretical capacity:</strong> {int((60/BATCH_DELAY) * MAX_BATCH_SIZE)} msg/min</p>
         </div>
 
@@ -897,6 +1054,7 @@ def main():
     print(f"   Monitoring: http://localhost:{PORT}/")
     print(f"   Stats JSON: http://localhost:{PORT}/stats")
     print(f"   Batch     : {BATCH_DELAY}s / {MAX_BATCH_SIZE} msg")
+    print(f"   Rate limit: {INTER_REQUEST_DELAY}s delay{f', max {MAX_DISCORD_REQUESTS} req/cycle' if MAX_DISCORD_REQUESTS > 0 else ''}")
     print(f"   Max queue : {MAX_QUEUE_SIZE}")
     if ALLOWED_CHANNELS:
         print(f"   Channels  : {', '.join(ALLOWED_CHANNELS)}")
@@ -922,4 +1080,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
