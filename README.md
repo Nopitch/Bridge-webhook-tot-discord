@@ -197,39 +197,38 @@ Access `http://localhost:3000/` for real-time monitoring:
 
 ```json
 {
-  &quot;status&quot;: &quot;OK&quot;,
-  &quot;uptime&quot;: &quot;2h 15m 30s&quot;,
-  &quot;queue&quot;: {
-    &quot;current&quot;: 5,
-    &quot;max&quot;: 500,
-    &quot;peak&quot;: 42
+  "status": "OK",
+  "uptime": "2h 15m 30s",
+  "queue": {
+    "current": 5,
+    "max": 500,
+    "peak": 42
   },
-  &quot;messages&quot;: {
-    &quot;total_received&quot;: 5000,
-    &quot;total_sent&quot;: 4998,
-    &quot;total_dropped&quot;: 0,
-    &quot;total_failed&quot;: 2,
-    &quot;received_per_minute&quot;: 45.2,
-    &quot;sent_per_minute&quot;: 44.8
+  "messages": {
+    "total_received": 5000,
+    "total_sent": 4998,
+    "total_dropped": 0,
+    "total_failed": 2,
+    "received_per_minute": 45.2,
+    "sent_per_minute": 44.8
   },
-  &quot;performance&quot;: {
-    &quot;total_requests&quot;: 1250,
-    &quot;requests_per_minute&quot;: 23.5,
-    &quot;rate_limits&quot;: 0,
-    &quot;rate_limits_global&quot;: 0,
-    &quot;rate_limits_shared&quot;: 0,
-    &quot;rate_limits_user&quot;: 0,
-    &quot;average_latency_ms&quot;: 125.3
+  "performance": {
+    "total_requests": 1250,
+    "requests_per_minute": 23.5,
+    "rate_limits": 0,
+    "rate_limits_global": 0,
+    "rate_limits_shared": 0,
+    "rate_limits_user": 0,
+    "average_latency_ms": 125.3
   },
-  &quot;config&quot;: {
-    &quot;batch_delay&quot;: 2.5,
-    &quot;max_batch_size&quot;: 20,
-    &quot;inter_request_delay&quot;: 0.5,
-    &quot;max_discord_requests&quot;: 1
+  "config": {
+    "batch_delay": 2.5,
+    "max_batch_size": 20,
+    "inter_request_delay": 0.5,
+    "max_discord_requests": 1
   }
 }
 ```
-
 ### Periodic logs
 
 Every 5 minutes (configurable via `STATS_LOG_INTERVAL`), a summary is logged:
