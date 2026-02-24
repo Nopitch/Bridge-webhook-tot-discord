@@ -68,7 +68,7 @@ PORT = 3000  # Listening port (must match Tot!)
 |----------|---------|-------------|
 | `DISCORD_WEBHOOK_URL` | - | Discord webhook URL (required) |
 | `PORT` | `3000` | HTTP server listening port |
-| `BOT_NAME` | `"La Poukave"` | Name displayed in Discord |
+| `BOT_NAME` | `"CHAT_CONAN"` | Name displayed in Discord |
 | `BOT_AVATAR` | Image URL | Bot avatar in Discord |
 
 ### Rate Limit Protection
