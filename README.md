@@ -123,9 +123,34 @@ Returns application health and metrics for integration with tools like Grafana.
 {
   "status": "OK",
   "uptime": "2h 15m 30s",
-  "queue": { "current": 5, "max": 500, "peak": 42 },
-  "messages": { "total_received": 5000, "total_sent": 4998 },
-  "performance": { "total_requests": 1250, "requests_per_minute": 23.5, "rate_limits": 0 }
+  "queue": {
+    "current": 5,
+    "max": 500,
+    "peak": 42
+  },
+  "messages": {
+    "total_received": 5000,
+    "total_sent": 4998,
+    "total_dropped": 0,
+    "total_failed": 2,
+    "received_per_minute": 45.2,
+    "sent_per_minute": 44.8
+  },
+  "performance": {
+    "total_requests": 1250,
+    "requests_per_minute": 23.5,
+    "rate_limits": 0,
+    "rate_limits_global": 0,
+    "rate_limits_shared": 0,
+    "rate_limits_user": 0,
+    "average_latency_ms": 125.3
+  },
+  "config": {
+    "batch_delay": 2.5,
+    "max_batch_size": 20,
+    "inter_request_delay": 0.5,
+    "max_discord_requests": 1
+  }
 }
 ```
 
