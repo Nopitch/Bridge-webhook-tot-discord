@@ -365,6 +365,8 @@ The script forces UTF-8 encoding for the Windows console. If you experience disp
 | File | Description |
 |------|-------------|
 | `tot_discord_bridge.py` | Main script |
+| `start.bat` | Startup script for Windows |
+| `start.sh` | Startup script for Linux and macOS |
 | `bridge.log` | Logs (automatic rotation, 5 MB max) |
 | `bridge.log.1`, `.2`, `.3` | Log backups |
 
