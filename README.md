@@ -71,16 +71,37 @@ PORT = 3000  # Listening port (must match Tot!)
 | `BOT_NAME` | `"La Poukave"` | Name displayed in Discord |
 | `BOT_AVATAR` | Image URL | Bot avatar in Discord |
 
-### Batching & Performance
+### Rate Limit Protection
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BATCH_DELAY` | `2.5` | Seconds between each Discord dispatch |
-| `MAX_BATCH_SIZE` | `10` | Max number of messages per batch |
-| `MAX_QUEUE_SIZE` | `500` | Max size of the waiting queue |
-| `MAX_FAILED_RETRY` | `200` | Max messages waiting for retry |
+| `INTER_REQUEST_DELAY` | `0.5` | Seconds between Discord requests (prevents burst limit of 5 req/2s) |
+| `MAX_DISCORD_REQUESTS` | `1` | Max requests per batch cycle (0 = unlimited, reactive mode) |
 
-### Monitoring
+**Recommended settings:**
+
+| Mode | INTER_REQUEST_DELAY | MAX_DISCORD_REQUESTS | Behavior |
+|------|---------------------|----------------------|----------|
+| Safe (recommended) | `0.5` | `1` | Zero rate limits, 24 req/min |
+| Balanced | `0.5` | `2` | Occasional rate limits, faster |
+| Reactive | `0.5` | `0` | Unlimited, handles rate limits reactively |
+
+### Batching
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BATCH_DELAY` | `2.5` | Seconds between batch cycles |
+| `MAX_BATCH_SIZE` | `20` | Maximum messages collected per cycle |
+| `MAX_QUEUE_SIZE` | `500` | Buffer for activity spikes |
+| `MAX_FAILED_RETRY` | `200` | Maximum messages waiting for retry |
+
+### Capacity Calculation
+```
+Cycles per minute: 60 / BATCH_DELAY = 24 cycles/min
+Requests per minute: 24 × MAX_DISCORD_REQUESTS = 24 req/min
+Discord limit: ~30 req/min (sustained)
+Margin: 30 / 24 = 1.25× (25% safety margin)
+```
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -152,61 +173,59 @@ http://localhost:3000/message
 
 ## Monitoring
 
-### Web monitoring page
+### Web Dashboard
 
-Access `http://localhost:3000/` to view the real-time dashboard.
+Access `http://localhost:3000/` for real-time monitoring:
 
-Displayed metrics:
+- Messages received/sent per minute
+- **Discord requests per minute** (new!)
+- Current queue size and peak
+- Average latency
+- **Rate limit breakdown by type** (new!)
 
-| Metric | Description |
-|--------|-------------|
-| Received messages/min | Inbound rate from Tot! |
-| Sent messages/min | Outbound rate to Discord |
-| Current queue | Number of pending messages |
-| Average latency | Time between reception and dispatch |
-| Queue peak | Historical maximum (with timestamp) |
-| Messages/min peak | Maximum observed load |
-| Dropped messages | Total of unsent messages |
-| Rate limits | Number of Discord blocks |
+### Rate Limit Types
 
-### JSON API (/stats)
+| Type | Meaning | Action |
+|------|---------|--------|
+| **Global** | Discord-wide limit (50 req/s) | CRITICAL - reduce traffic immediately! |
+| **Shared** | Channel/webhook limit (~30 req/min) | Reduce `MAX_DISCORD_REQUESTS` |
+| **User** | Burst limit (5 req/2s) | Increase `INTER_REQUEST_DELAY` |
 
-For integration with external monitoring tools:
+### JSON API
 
-```bash
-curl http://localhost:3000/stats
-```
+`GET /stats` returns:
 
-Response:
 ```json
 {
-  "status": "OK",
-  "uptime": "2h 15m 30s",
-  "uptime_seconds": 8130,
-  "queue": {
-    "current": 5,
-    "max": 500,
-    "percent": 1.0,
-    "peak": 45,
-    "peak_time": "2026-02-24T20:30:15"
+  &quot;status&quot;: &quot;OK&quot;,
+  &quot;uptime&quot;: &quot;2h 15m 30s&quot;,
+  &quot;queue&quot;: {
+    &quot;current&quot;: 5,
+    &quot;max&quot;: 500,
+    &quot;peak&quot;: 42
   },
-  "messages": {
-    "total_received": 1250,
-    "total_sent": 1248,
-    "total_dropped": 0,
-    "total_failed": 2,
-    "received_per_minute": 12.5,
-    "sent_per_minute": 12.3,
-    "peak_per_minute": 85.0
+  &quot;messages&quot;: {
+    &quot;total_received&quot;: 5000,
+    &quot;total_sent&quot;: 4998,
+    &quot;total_dropped&quot;: 0,
+    &quot;total_failed&quot;: 2,
+    &quot;received_per_minute&quot;: 45.2,
+    &quot;sent_per_minute&quot;: 44.8
   },
-  "performance": {
-    "rate_limits": 3,
-    "average_latency_ms": 2450.5
+  &quot;performance&quot;: {
+    &quot;total_requests&quot;: 1250,
+    &quot;requests_per_minute&quot;: 23.5,
+    &quot;rate_limits&quot;: 0,
+    &quot;rate_limits_global&quot;: 0,
+    &quot;rate_limits_shared&quot;: 0,
+    &quot;rate_limits_user&quot;: 0,
+    &quot;average_latency_ms&quot;: 125.3
   },
-  "config": {
-    "batch_delay": 2.5,
-    "max_batch_size": 10,
-    "theoretical_capacity": 240
+  &quot;config&quot;: {
+    &quot;batch_delay&quot;: 2.5,
+    &quot;max_batch_size&quot;: 20,
+    &quot;inter_request_delay&quot;: 0.5,
+    &quot;max_discord_requests&quot;: 1
   }
 }
 ```
@@ -274,7 +293,23 @@ JSON endpoint with all metrics for external monitoring.
                               │  / Dashboard │
                               └──────────────┘
 ```
+## Architecture
 
+```
+Tot! Mod → HTTP GET → Flask /message → Queue (FIFO)
+                                           ↓
+                              Discord Worker (background thread)
+                                           ↓
+                              ┌─────────────────────────┐
+                              │ For each batch cycle:   │
+                              │ 1. Get deferred msgs    │
+                              │ 2. Collect new msgs     │
+                              │ 3. Send (with delay)    │
+                              │ 4. Defer remaining      │
+                              └─────────────────────────┘
+                                           ↓
+                              Discord Webhook (rate limited)
+```
 ### Calculated capacity
 
 - Discord limit: 5 requests / 2 seconds = 150 req/min
@@ -284,24 +319,42 @@ JSON endpoint with all metrics for external monitoring.
 
 ## Troubleshooting
 
-### The webhook is not working
+### High "Shared" Rate Limits
 
-```text
-CRITICAL ERROR: Discord webhook invalid or deleted!
+**Symptom:** `rate_limits_shared` increasing in stats
+
+**Cause:** Exceeding ~30 requests/minute on the webhook
+
+**Solution:**
+```python
+MAX_DISCORD_REQUESTS = 1  # Limit to 24 req/min
 ```
--> Verify that the webhook URL is correct and that the webhook has not been deleted.
 
-### Dropped messages / Full queue
+### High "User" Rate Limits
 
-```text
-Queue full (500), message ignored
+**Symptom:** `rate_limits_user` increasing in stats
+
+**Cause:** Sending too fast (burst limit: 5 req/2s)
+
+**Solution:**
+```python
+INTER_REQUEST_DELAY = 0.5  # 500ms between requests
 ```
--> Check the dashboard to see the queue peak. If the peak approaches `MAX_QUEUE_SIZE`, increase this value or reduce `BATCH_DELAY`.
 
-Diagnosis via `/stats`:
-```bash
-curl -s http://localhost:3000/stats | jq '.queue'
-```
+### Queue Growing / Messages Delayed
+
+**Symptom:** Queue size increasing, messages arriving late
+
+**Cause:** `MAX_DISCORD_REQUESTS = 1` limits throughput to ~24 req/min
+
+**Solutions:**
+1. Increase `MAX_DISCORD_REQUESTS` to `2` (accept some rate limits)
+2. Decrease `BATCH_DELAY` to `2.0` (30 cycles/min)
+3. Filter unnecessary channels with `ALLOWED_CHANNELS`
+
+### Message Order
+
+Messages are **always delivered in chronological order**. Deferred messages (due to rate limits or request limits) are sent before new messages in the next cycle.
 
 ### Discord rate limit
 
@@ -310,17 +363,6 @@ Discord rate limit, resuming in X.Xs
 ```
 -> Normal during activity spikes. The system automatically handles retries. If frequent, increase `BATCH_DELAY`.
 
-Check frequency:
-```bash
-curl -s http://localhost:3000/stats | jq '.performance.rate_limits'
-```
-
-### High latency
-
-If the average latency exceeds 5 seconds:
-1. Verify that the queue is not filling up faster than it empties
-2. Reduce `BATCH_DELAY` (watch out for rate limits)
-3. Increase `MAX_BATCH_SIZE`
 
 ### Windows encoding errors
 
