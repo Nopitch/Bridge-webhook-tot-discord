@@ -735,8 +735,9 @@ def receive_message():
         return {"status": "ok"}, 200
 
     except Exception as e:
-        logger.error(f"Error: {e}")
-        return {"error": str(e)}, 500
+        # Log detailed error server-side but return a generic message to the client
+        logger.error(f"Error in /message endpoint: {e}", exc_info=True)
+        return {"error": "Internal server error"}, 500
 
 
 @app.route('/', methods=['GET'])
