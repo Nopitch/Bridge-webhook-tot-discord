@@ -309,13 +309,6 @@ Tot! Mod → HTTP GET → Flask /message → Queue (FIFO)
                                            ↓
                               Discord Webhook (rate limited)
 ```
-### Calculated capacity
-
-- Discord limit: 5 requests / 2 seconds = 150 req/min
-- Safe configuration: 1 request / 2.5 seconds = 24 req/min
-- With batching: 10 msg/batch x 24 = 240 messages/minute
-- 60 players x 2 msg/min: 120 msg/min -> 100% margin
-
 ## Troubleshooting
 
 ### High "Shared" Rate Limits
