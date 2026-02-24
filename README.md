@@ -2,6 +2,13 @@
 
 A Python bridge that forwards messages from the Tot! Roleplay Redux mod (Conan Exiles) to a Discord channel in real-time via webhook.
 
+**Topics:** ![Conan Exiles](https://img.shields.io/badge/Conan_Exiles-Modding-brown.svg)
+![Discord Webhook](https://img.shields.io/badge/Discord-Webhook-5865F2.svg)
+![Tot! Redux](https://img.shields.io/badge/Tot!-Redux-ff69b4.svg)
+![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
+![Flask](https://img.shields.io/badge/Flask-2.0+-green.svg)
+![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+
 ## Features
 
 - Real-time transmission of chat messages to Discord
