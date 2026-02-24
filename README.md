@@ -334,40 +334,6 @@ The script forces UTF-8 encoding for the Windows console. If you experience disp
 | `bridge.log` | Logs (automatic rotation, 5 MB max) |
 | `bridge.log.1`, `.2`, `.3` | Log backups |
 
-## Configuration Recommendations
-
-### Quiet server (< 20 players)
-
-```python
-BATCH_DELAY = 3.0
-MAX_BATCH_SIZE = 5
-MAX_QUEUE_SIZE = 100
-```
-
-### Medium server (20-40 players)
-
-```python
-BATCH_DELAY = 2.5
-MAX_BATCH_SIZE = 10
-MAX_QUEUE_SIZE = 300
-```
-
-### Active server (40-60 players)
-
-```python
-BATCH_DELAY = 2.0
-MAX_BATCH_SIZE = 15
-MAX_QUEUE_SIZE = 500
-```
-
-### Massive RP event (60+ players)
-
-```python
-BATCH_DELAY = 1.5
-MAX_BATCH_SIZE = 20
-MAX_QUEUE_SIZE = 1000
-```
-
 ## License
 
 MIT License - Free to use and modify.
