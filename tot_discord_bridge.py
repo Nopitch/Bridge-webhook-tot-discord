@@ -48,7 +48,6 @@ BOT_AVATAR = ""
 
 # =============================================================================
 # BATCHING - Optimized for 60 players
-# 
 # Capacity calculation:
 #   - Discord limit: 5 requests / 2 seconds = 150 req/min
 #   - Our config: 1 request / 2.5 seconds = 24 req/min (very safe)
@@ -99,7 +98,6 @@ ALLOWED_CHANNELS = []
 
 # =============================================================================
 # TIME FORMAT
-# 
 # Discord formats (adapts to each user's timezone):
 #   "t" = 14:30
 #   "T" = 14:30:00
@@ -156,7 +154,6 @@ message_queue = queue.Queue()
 
 # =============================================================================
 # STATISTICS AND MONITORING SYSTEM
-# 
 # Collects metrics for:
 #   - Diagnosing performance issues
 #   - Adjusting configuration (queue, batch delay, etc.)
@@ -506,7 +503,6 @@ def send_to_discord(content):
 def send_batch_to_discord(messages):
     """
     Sends a group of messages to Discord.
-
     Intelligently splits messages to:
     - Respect the 2000 character limit
     - Preserve chronological order (IMPORTANT for RP!)
@@ -585,7 +581,6 @@ def send_batch_to_discord(messages):
 def discord_worker():
     """
     Thread that runs continuously and processes messages from the queue.
-
     NON-BLOCKING VERSION:
     - Continues collecting messages even during rate limit
     - Never does long sleep that would block collection
